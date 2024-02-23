@@ -4,17 +4,36 @@ import os
 
 import torch
 from torch import optim
+from torch.nn.modules.batchnorm import _BatchNorm
 from torchsummary import summary
 from tqdm import tqdm
 
 from module.detector import Detector
 from module.loss import DetectorLoss
+from sam import SAM
 from utils.datasets import *
 from utils.evaluation import CocoDetectionEvaluator
 from utils.tool import *
 
 # 指定后端设备CUDA&CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# SAM Skip BatchNorm
+def disable_running_stats(model_bn):
+    def _disable(module):
+        if isinstance(module, _BatchNorm):
+            module.backup_momentum = module.momentum
+            module.momentum = 0
+
+    model_bn.apply(_disable)
+
+
+def enable_running_stats(model_bn):
+    def _enable(module):
+        if isinstance(module, _BatchNorm) and hasattr(module, "backup_momentum"):
+            module.momentum = module.backup_momentum
+
+    model_bn.apply(_enable)
 
 
 class FastestDet:
@@ -44,8 +63,12 @@ class FastestDet:
 
         # 构建优化器
         print("use SGD optimizer")
-        self.optimizer = optim.SGD(
-            params=self.model.parameters(),
+        base_optimizer = torch.optim.SGD
+        self.optimizer = SAM(
+            self.model.parameters(),
+            base_optimizer,
+            adaptive=True,
+            rho=0.5,
             lr=self.cfg.learn_rate,
             momentum=0.949,
             weight_decay=0.0005,
@@ -102,15 +125,19 @@ class FastestDet:
                 imgs = imgs.to(device).float() / 255.0
                 targets = targets.to(device)
                 # 模型推理
+                enable_running_stats(self.model)
                 preds = self.model(imgs)
 
-                # loss计算
+                # loss计算 (first backward pass)
                 iou, obj, cls, total = self.loss_function(preds, targets)
                 # 反向传播求解梯度
                 total.backward()
-                # 更新模型参数
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+                self.optimizer.first_step(zero_grad=True)
+
+                # loss计算 (second backward pass)
+                disable_running_stats(self.model)
+                self.loss_function(self.model(imgs), targets)[3].backward()
+                self.optimizer.second_step(zero_grad=True)
 
                 # 学习率预热
                 for g in self.optimizer.param_groups:
