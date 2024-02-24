@@ -1,6 +1,7 @@
 import os
 import random
 
+import albumentations as A
 import cv2
 import numpy as np
 import torch
@@ -56,8 +57,18 @@ def random_narrow(image, boxes):
         output.append([index, category, bx, by, bw, bh])
 
     output = np.array(output, dtype=float)
-
     return background, output
+
+
+def aug(transform, image, boxes):
+    # reshape from (index, cat, x, y, w, h) to (x, y, w, h, cat, index)
+    bboxes = np.concatenate([boxes[:, 2:], boxes[:, :2]], axis=1)
+    transformed = transform(image=image, bboxes=bboxes)
+    image = transformed["image"]
+    bboxes = np.array(transformed["bboxes"])
+    # reshape back to (index, cat, x, y, w, h)
+    boxes = np.concatenate([bboxes[:, -2:], bboxes[:, :-2]], axis=1)
+    return image, boxes
 
 
 def collate_fn(batch):
@@ -78,6 +89,26 @@ class TensorDataset:
         self.img_width = img_width
         self.img_height = img_height
         self.img_formats = ["bmp", "jpg", "jpeg", "png"]
+        self.train_transform = A.Compose(
+            [
+                A.LongestMaxSize(max_size=max(img_width, img_height), p=1.0),
+                A.HorizontalFlip(p=0.5),
+                A.RandomBrightnessContrast(p=0.2),
+                A.PadIfNeeded(
+                    min_height=img_width, min_width=img_height, border_mode=0, p=1.0
+                ),
+            ],
+            bbox_params=A.BboxParams(format="yolo"),
+        )
+        self.val_transform = A.Compose(
+            [
+                A.LongestMaxSize(max_size=max(img_width, img_height), p=1.0),
+                A.PadIfNeeded(
+                    min_height=img_width, min_width=img_height, border_mode=0, p=1.0
+                ),
+            ],
+            bbox_params=A.BboxParams(format="yolo"),
+        )
 
         # 数据检查
         with open(self.path, "r") as f:
@@ -116,14 +147,9 @@ class TensorDataset:
 
         # 是否进行数据增强
         if self.aug:
-            if random.randint(1, 10) % 2 == 0:
-                img, label = random_narrow(img, label)
-            else:
-                img, label = random_crop(img, label)
-
-        img = cv2.resize(
-            img, (self.img_width, self.img_height), interpolation=cv2.INTER_LINEAR
-        )
+            img, label = aug(self.train_transform, img, label)
+        else:
+            img, label = aug(self.val_transform, img, label)
 
         # debug
         # for box in label:
