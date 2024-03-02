@@ -5,9 +5,11 @@ import os
 import torch
 from torch import optim
 from torch.nn.modules.batchnorm import _BatchNorm
+from torch.utils.data import DataLoader
 from torchsummary import summary
 from tqdm import tqdm
 
+from module.custom_layers import DetectHead
 from module.detector import Detector
 from module.loss import DetectorLoss
 from sam import SAM
@@ -53,8 +55,12 @@ class FastestDet:
         # 初始化模型结构
         if opt.weight is not None:
             print("load weight from:%s" % opt.weight)
-            self.model = Detector(self.cfg.category_num, True).to(device)
-            self.model.load_state_dict(torch.load(opt.weight))
+            self.model = Detector(80, True).to(device)
+            self.model.load_state_dict(torch.load(opt.weight, map_location=device))
+            # reinit self.model.detect_head
+            self.model.detect_head = DetectHead(
+                self.model.stage_out_channels[-2], self.cfg.category_num
+            )
         else:
             self.model = Detector(self.cfg.category_num, False).to(device)
 
@@ -93,7 +99,7 @@ class FastestDet:
         )
 
         # 验证集
-        self.val_dataloader = torch.utils.data.DataLoader(
+        self.val_dataloader = DataLoader(
             val_dataset,
             batch_size=self.cfg.batch_size,
             shuffle=False,
@@ -103,13 +109,13 @@ class FastestDet:
             persistent_workers=True,
         )
         # 训练集
-        self.train_dataloader = torch.utils.data.DataLoader(
+        self.train_dataloader = DataLoader(
             train_dataset,
             batch_size=self.cfg.batch_size,
             shuffle=True,
             collate_fn=collate_fn,
             num_workers=4,
-            drop_last=True,
+            drop_last=False,
             persistent_workers=True,
         )
 
