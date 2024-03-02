@@ -51,10 +51,24 @@ def pad_to_square(img, size, pad_value=0):
     h, w, _ = img.shape
     h_diff = size - h
     w_diff = size - w
+    # keep image in top left
+    bottom = h_diff
+    right = w_diff
     img = cv2.copyMakeBorder(
-        img, 0, h_diff, 0, w_diff, cv2.BORDER_CONSTANT, value=pad_value
+        img, 0, bottom, 0, right, cv2.BORDER_CONSTANT, value=pad_value
     )
     return img
+
+
+def restore_coords(boxes, orig_shape, pad_shape):
+    orig_h, orig_w = orig_shape
+    pad_h, pad_w = pad_shape
+
+    # Rescale coordinates to original dimensions
+    boxes[:, [0, 2]] = (boxes[:, [0, 2]] * pad_w).clip(0, orig_w)
+    boxes[:, [1, 3]] = (boxes[:, [1, 3]] * pad_h).clip(0, orig_h)
+
+    return boxes
 
 
 if __name__ == "__main__":
@@ -108,8 +122,10 @@ if __name__ == "__main__":
     # 数据预处理
     ori_img = cv2.imread(opt.img)
     res_img = pad_to_square(ori_img, cfg.input_height)
-    img = res_img.reshape(1, cfg.input_height, cfg.input_width, 3)
-    img = torch.from_numpy(img.transpose(0, 3, 1, 2))
+    ret_img = res_img.copy()
+    img = res_img.reshape(cfg.input_height, cfg.input_width, 3)
+    img = torch.from_numpy(img.transpose(2, 0, 1))
+    img = img.unsqueeze(0)
     img = img.to(device).float() / 255.0
 
     # 导出onnx模型
@@ -150,7 +166,7 @@ if __name__ == "__main__":
     print("forward time:%fms" % time)
 
     # 特征图后处理
-    output = handle_preds(preds, device, opt.thresh)
+    output = handle_preds(preds, device, opt.thresh, nms_thresh=0.1)
 
     # 加载label names
     LABEL_NAMES = []
@@ -158,7 +174,7 @@ if __name__ == "__main__":
         for line in f.readlines():
             LABEL_NAMES.append(line.strip())
 
-    H, W, _ = ori_img.shape
+    H, W, _ = cfg.input_height, cfg.input_width, 3
     scale_h, scale_w = H / cfg.input_height, W / cfg.input_width
 
     # 绘制预测框
@@ -172,8 +188,8 @@ if __name__ == "__main__":
         x1, y1 = int(box[0] * W), int(box[1] * H)
         x2, y2 = int(box[2] * W), int(box[3] * H)
 
-        cv2.rectangle(ori_img, (x1, y1), (x2, y2), (255, 255, 0), 2)
-        cv2.putText(ori_img, "%.2f" % obj_score, (x1, y1 - 5), 0, 0.7, (0, 255, 0), 2)
-        cv2.putText(ori_img, category, (x1, y1 - 25), 0, 0.7, (0, 255, 0), 2)
+        cv2.rectangle(ret_img, (x1, y1), (x2, y2), (255, 255, 0), 2)
+        cv2.putText(ret_img, "%.2f" % obj_score, (x1, y1 - 5), 0, 0.7, (0, 255, 0), 2)
+        cv2.putText(ret_img, category, (x1, y1 - 25), 0, 0.7, (0, 255, 0), 2)
 
-    cv2.imwrite("result.png", ori_img)
+    cv2.imwrite("result.png", ret_img)

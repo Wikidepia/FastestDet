@@ -5,6 +5,54 @@ import numpy as np
 import onnxruntime
 
 
+# https://stackoverflow.com/a/44659589
+def image_resize(image, width=0.0, height=0.0, inter=cv2.INTER_AREA):
+    # initialize the dimensions of the image to be resized and
+    # grab the image size
+    dim = None
+    (h, w) = image.shape[:2]
+
+    # if both the width and height are None, then return the
+    # original image
+    if width is None and height is None:
+        return image
+
+    # check to see if the width is None
+    if width is None:
+        # calculate the ratio of the height and construct the
+        # dimensions
+        r = height / float(h)
+        dim = (int(w * r), height)
+
+    # otherwise, the height is None
+    else:
+        # calculate the ratio of the width and construct the
+        # dimensions
+        r = width / float(w)
+        dim = (width, int(h * r))
+
+    # resize the image
+    resized = cv2.resize(image, dim, interpolation=inter)
+
+    # return the resized image
+    return resized
+
+
+def pad_to_square(img, size, pad_value=0):
+    img = image_resize(img, width=size)
+    # pad to sizexsize
+    h, w, _ = img.shape
+    h_diff = size - h
+    w_diff = size - w
+    # keep image in top left
+    bottom = h_diff
+    right = w_diff
+    img = cv2.copyMakeBorder(
+        img, 0, bottom, 0, right, cv2.BORDER_CONSTANT, value=pad_value
+    )
+    return img
+
+
 # sigmoid函数
 def sigmoid(x):
     return 1.0 / (1 + np.exp(-x))
@@ -17,7 +65,7 @@ def tanh(x):
 
 # 数据预处理
 def preprocess(src_img, size):
-    output = cv2.resize(src_img, (size[0], size[1]), interpolation=cv2.INTER_AREA)
+    output = pad_to_square(src_img, max(size))
     output = output.transpose(2, 0, 1)
     output = output.reshape((1, 3, size[1], size[0])) / 255
 
@@ -42,7 +90,10 @@ def nms(dets, thresh=0.45):
         keep.append(i)
 
         # 计算置信度最高的bbox和其他剩下bbox之间的交叉区域
+        print("XX", x1[order[1:]])
+        print("x11", x1[i])
         xx1 = np.maximum(x1[i], x1[order[1:]])
+        print("xx1", xx1)
         yy1 = np.maximum(y1[i], y1[order[1:]])
         xx2 = np.minimum(x2[i], x2[order[1:]])
         yy2 = np.minimum(y2[i], y2[order[1:]])
@@ -54,17 +105,19 @@ def nms(dets, thresh=0.45):
 
         # 求交叉区域的面积占两者（置信度高的bbox和其他bbox）面积和的必烈
         ovr = inter / (areas[i] + areas[order[1:]] - inter)
-
+        print("inter", w)
+        print("ovr", ovr)
         # 保留ovr小于thresh的bbox，进入下一次迭代。
         inds = np.where(ovr <= thresh)[0]
 
         # 因为ovr中的索引不包括order[0]所以要向后移动一位
         order = order[inds + 1]
 
+    print(len(dets))
     output = []
     for i in keep:
         output.append(dets[i].tolist())
-
+    print(keep)
     return output
 
 
@@ -81,7 +134,7 @@ def detection(session, img, input_width, input_height, thresh):
     # 模型推理
     input_name = session.get_inputs()[0].name
     feature_map = session.run([], {input_name: data})[0][0]
-
+    print(feature_map.shape)
     # 输出特征图转置: CHW, HWC
     feature_map = feature_map.transpose(1, 2, 0)
     # 输出特征图的宽高
@@ -95,14 +148,15 @@ def detection(session, img, input_width, input_height, thresh):
 
             # 解析检测框置信度
             obj_score, cls_score = data[0], data[5:].max()
+            # print(cls_score)
             score = (obj_score**0.6) * (cls_score**0.4)
-
             # 阈值筛选
             if score > thresh:
                 # 检测框类别
                 cls_index = np.argmax(data[5:])
                 # 检测框中心点偏移
                 x_offset, y_offset = tanh(data[1]), tanh(data[2])
+                print(x_offset)
                 # 检测框归一化后的宽高
                 box_width, box_height = sigmoid(data[3]), sigmoid(data[4])
                 # 检测框归一化后中心点
@@ -115,20 +169,21 @@ def detection(session, img, input_width, input_height, thresh):
                 x1, y1, x2, y2 = int(x1 * W), int(y1 * H), int(x2 * W), int(y2 * H)
 
                 pred.append([x1, y1, x2, y2, score, cls_index])
-
+    if len(pred) == 0:
+        return []
     return nms(np.array(pred))
 
 
 if __name__ == "__main__":
     # 读取图片
-    img = cv2.imread("3.jpg")
+    img = cv2.imread("../../hasil-4-0.jpeg")
     # 模型输入的宽高
     input_width, input_height = 352, 352
     # 加载模型
     session = onnxruntime.InferenceSession("FastestDet.onnx")
     # 目标检测
     start = time.perf_counter()
-    bboxes = detection(session, img, input_width, input_height, 0.65)
+    bboxes = detection(session, img, input_width, input_height, 0.5)
     end = time.perf_counter()
     time = (end - start) * 1000.0
     print("forward time:%fms" % time)
